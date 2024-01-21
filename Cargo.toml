@@ -1,0 +1,11 @@
+[package]
+name = "ffmpeg-aniskip"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ureq = "2.9.1"
+anyhow = "1.0.79"
+tempfile = "3.9.0"
+serde = { version = "1.0.195", features = ["serde_derive"] }
+serde_json = "1.0.111"
