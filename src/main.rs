@@ -60,6 +60,10 @@ impl Skip {
     }
 }
 
+fn f32_u64(n: f32) -> u64 {
+    (n as u64 * 1000) + (((n - (n as u64 as f32)) * 1000.0) as u64)
+}
+
 pub fn aniskip_deserialize<S: AsRef<str>>(s: S) -> impl Iterator<Item = Skip> {
     #[allow(non_snake_case)]
     #[derive(Debug, Deserialize)]
@@ -79,10 +83,6 @@ pub fn aniskip_deserialize<S: AsRef<str>>(s: S) -> impl Iterator<Item = Skip> {
     }
     impl From<Item> for Option<Skip> {
         fn from(Item { interval, skipType }: Item) -> Self {
-            fn f32_u64(n: f32) -> u64 {
-                (n as u64 * 1000) + (((n - (n as u64 as f32)) * 1000.0) as u64)
-            }
-
             let Intervl { startTime, endTime } = interval?;
             let interval = Interval {
                 start: f32_u64(startTime?),
@@ -110,6 +110,7 @@ pub fn aniskip_deserialize<S: AsRef<str>>(s: S) -> impl Iterator<Item = Skip> {
 fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
     dir: P,
     body: S,
+    len: u64,
 ) -> io::Result<Option<TempPath>> {
     #[derive(Default)]
     struct Ids {
@@ -179,17 +180,47 @@ fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
             prev_time = skip.interval.end;
         }
         writeln!(f)?;
-        let s = Skip {
-            interval: Interval {
-                start: prev_time + 1,
-                end: prev_time + 2,
-            },
-            typ: SkipType::Progress,
-        };
-        s.format(ids.get(s.typ), &mut f)?;
+        if prev_time < len {
+            let s = Skip {
+                interval: Interval {
+                    start: prev_time + 1,
+                    end: len,
+                },
+                typ: SkipType::Progress,
+            };
+            s.format(ids.get(s.typ), &mut f)?;
+        }
         f.flush()?;
     }
     Ok(path)
+}
+
+fn get_length<P: AsRef<Path>>(path: P) -> f32 {
+    let mut cmd = Command::new("ffprobe");
+    cmd.args([
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+    ]);
+    cmd.arg(path.as_ref());
+    cmd.output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(o.stdout)
+            } else {
+                None
+            }
+        })
+        .and_then(|o| {
+            std::str::from_utf8(&o)
+                .ok()
+                .and_then(|o| o.trim().parse::<f32>().ok())
+        })
+        .unwrap_or(0.0)
 }
 
 fn ffmpeg<P: AsRef<Path>>(file: P, metadata_file: TempPath) -> io::Result<()> {
@@ -259,13 +290,14 @@ fn _main() -> Result<()> {
         std::process::exit(1);
     };
 
-    let url = format!("https://api.aniskip.com/v2/skip-times/{}/{}?types=op&types=ed&types=mixed-op&types=mixed-ed&types=recap&episodeLength=0", mal_id, epno);
+    let len = get_length(&file);
+    let url = format!("https://api.aniskip.com/v2/skip-times/{}/{}?types=op&types=ed&types=mixed-op&types=mixed-ed&types=recap&episodeLength={:.3}", mal_id, epno, len);
     let body = ureq::get(&url)
         .call()
         .and_then(|res| Ok(res.into_string()?))
         .context("error in request")?;
     drop(url);
-    let Some(metadata_file) = generate_metadata_file(file.parent().unwrap(), body)
+    let Some(metadata_file) = generate_metadata_file(file.parent().unwrap(), body, f32_u64(len))
         .context("Cannot create metadata file")?
     else {
         return Ok(());
