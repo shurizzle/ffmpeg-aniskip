@@ -293,7 +293,7 @@ fn _main() -> Result<()> {
     };
 
     let len = get_length(&file);
-    let url = format!("https://api.aniskip.com/v2/skip-times/{}/{}?types=op&types=ed&types=mixed-op&types=mixed-ed&types=recap&episodeLength={:.3}", mal_id, epno, len);
+    let url = format!("https://api.aniskip.com/v2/skip-times/{}/{}?types=op&types=ed&types=mixed-op&types=mixed-ed&types=recap&episodeLength=0", mal_id, epno);
     let body = ureq::get(&url)
         .call()
         .and_then(|res| Ok(res.into_string()?))
