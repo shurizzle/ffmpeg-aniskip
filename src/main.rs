@@ -136,7 +136,9 @@ fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
     }
 
     let mut ids = Ids::default();
-    let mut it = aniskip_deserialize(body);
+    let mut skips = aniskip_deserialize(body).collect::<Vec<_>>();
+    skips.sort_unstable_by_key(|x| x.interval.start);
+    let mut it = skips.into_iter();
     let mut prev_time = 0u64;
     let mut path = None;
     if let Some(skip) = it.next() {
