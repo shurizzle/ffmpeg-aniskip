@@ -247,7 +247,16 @@ fn ffmpeg<P: AsRef<Path>>(file: P, metadata_file: TempPath) -> io::Result<()> {
         .arg(file)
         .arg("-i")
         .arg(&metadata_file)
-        .args(["-map_metadata", "1", "-codec", "copy"])
+        .args([
+            "-map_metadata",
+            "1",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+            "-c:s",
+            "copy",
+        ])
         .arg(&tmpfile);
     println!("{cmd:?}");
     if !cmd.status()?.success() {
