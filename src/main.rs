@@ -1,12 +1,13 @@
 use std::{
     ffi::OsString,
     fs::{self, File},
-    io::{self, BufWriter},
+    io::{self, BufWriter, Read},
     path::Path,
     process::Command,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use ffmetadata::FFMetadata;
 use serde::Deserialize;
 use tempfile::{Builder, TempPath};
 
@@ -26,7 +27,7 @@ pub enum SkipType {
 }
 
 impl SkipType {
-    pub fn format<F: std::io::Write>(&self, idx: usize, fmt: &mut F) -> std::io::Result<()> {
+    pub fn format<F: core::fmt::Write>(&self, idx: usize, fmt: &mut F) -> core::fmt::Result {
         let name = match self {
             Self::Opening => "Opening",
             Self::Ending => "Ending",
@@ -49,14 +50,17 @@ pub struct Skip {
 }
 
 impl Skip {
-    pub fn format<F: std::io::Write>(&self, idx: usize, fmt: &mut F) -> std::io::Result<()> {
-        writeln!(fmt, "[CHAPTER]")?;
-        writeln!(fmt, "TIMEBASE=1/1000")?;
-        writeln!(fmt, "START={}", self.interval.start)?;
-        writeln!(fmt, "END={}", self.interval.end)?;
-        write!(fmt, "title=")?;
-        self.typ.format(idx, fmt)?;
-        writeln!(fmt)
+    pub fn to_kv(&self, idx: usize) -> (String, Vec<(String, String)>) {
+        let mut kv = Vec::new();
+        kv.push(("TIMEBASE".to_string(), "1/1000".to_string()));
+        kv.push(("START".to_string(), self.interval.start.to_string()));
+        kv.push(("END".to_string(), self.interval.end.to_string()));
+        let mut title = String::new();
+        _ = self.typ.format(idx, &mut title);
+        title.shrink_to_fit();
+        kv.push(("title".to_string(), title));
+
+        ("CHAPTER".to_string(), kv)
     }
 }
 
@@ -107,11 +111,44 @@ pub fn aniskip_deserialize<S: AsRef<str>>(s: S) -> impl Iterator<Item = Skip> {
     results.into_iter().filter_map(Into::into)
 }
 
+fn eq_lowercase(s1: &str, s2: &str) -> bool {
+    let it1 = s1.chars().flat_map(|c| c.to_lowercase());
+    let it2 = s2.chars().flat_map(|c| c.to_lowercase());
+    it1.eq(it2)
+}
+
+fn dump_metadata<P: AsRef<Path>>(file: P) -> Result<(FFMetadata, TempPath)> {
+    let (mut f, p) = Builder::new()
+        .suffix(".txt")
+        .tempfile_in(file.as_ref().parent().unwrap())?
+        .into_parts();
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-y", "-i"])
+        .arg(file.as_ref())
+        .args(["-f", "ffmetadata"])
+        .arg(&p);
+    println!("{cmd:?}");
+    if !cmd.status()?.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, "ffmpeg exited with errors").into());
+    }
+
+    let mut buf = String::new();
+    f.read_to_string(&mut buf)?;
+    drop(f);
+    let mut md = FFMetadata::parse(&buf).map_err(|e| anyhow!("{}", e))?;
+    drop(buf);
+    md.sections
+        .retain(|(name, _)| !eq_lowercase(name, "chapter"));
+
+    Ok((md, p))
+}
+
 fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
-    dir: P,
+    file: P,
     body: S,
     len: u64,
-) -> io::Result<Option<TempPath>> {
+) -> Result<Option<TempPath>> {
     #[derive(Default)]
     struct Ids {
         opening: usize,
@@ -142,15 +179,8 @@ fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
     let mut prev_time = 0u64;
     let mut path = None;
     if let Some(skip) = it.next() {
-        use std::io::Write;
-        let (f, p) = Builder::new()
-            .suffix(".txt")
-            .tempfile_in(dir.as_ref())?
-            .into_parts();
-        path = Some(p);
-        let mut f = BufWriter::new(f);
+        let (mut md, p) = dump_metadata(file)?;
 
-        writeln!(f, ";FFMETADATA1")?;
         if skip.interval.start > prev_time {
             let s = Skip {
                 interval: Interval {
@@ -159,15 +189,13 @@ fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
                 },
                 typ: SkipType::Progress,
             };
-            s.format(ids.get(s.typ), &mut f)?;
-            writeln!(f)?;
+            md.sections.push(s.to_kv(ids.get(s.typ)));
         }
-        skip.format(ids.get(skip.typ), &mut f)?;
+        md.sections.push(skip.to_kv(ids.get(skip.typ)));
         prev_time = skip.interval.end;
 
         for skip in it {
             if skip.interval.start > prev_time {
-                writeln!(f)?;
                 let s = Skip {
                     interval: Interval {
                         start: prev_time,
@@ -175,13 +203,11 @@ fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
                     },
                     typ: SkipType::Progress,
                 };
-                s.format(ids.get(s.typ), &mut f)?;
+                md.sections.push(s.to_kv(ids.get(s.typ)));
             }
-            writeln!(f)?;
-            skip.format(ids.get(skip.typ), &mut f)?;
+            md.sections.push(skip.to_kv(ids.get(skip.typ)));
             prev_time = skip.interval.end;
         }
-        writeln!(f)?;
         if prev_time < len {
             let s = Skip {
                 interval: Interval {
@@ -190,9 +216,14 @@ fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
                 },
                 typ: SkipType::Progress,
             };
-            s.format(ids.get(s.typ), &mut f)?;
+            md.sections.push(s.to_kv(ids.get(s.typ)));
         }
-        f.flush()?;
+
+        let f = File::create(&p)?;
+        path = Some(p);
+        let mut writer = BufWriter::new(f);
+        use std::io::Write;
+        write!(writer, "{}", md)?;
     }
     Ok(path)
 }
@@ -308,8 +339,8 @@ fn _main() -> Result<()> {
         .and_then(|res| Ok(res.into_string()?))
         .context("error in request")?;
     drop(url);
-    let Some(metadata_file) = generate_metadata_file(file.parent().unwrap(), body, f32_u64(len))
-        .context("Cannot create metadata file")?
+    let Some(metadata_file) =
+        generate_metadata_file(&file, body, f32_u64(len)).context("Cannot create metadata file")?
     else {
         return Ok(());
     };
