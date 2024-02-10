@@ -220,6 +220,7 @@ fn generate_metadata_file<P: AsRef<Path>, S: AsRef<str>>(
         }
 
         let f = File::create(&p)?;
+        println!("{md}");
         path = Some(p);
         let mut writer = BufWriter::new(f);
         use std::io::Write;
@@ -275,11 +276,13 @@ fn ffmpeg<P: AsRef<Path>>(file: P, metadata_file: TempPath) -> io::Result<()> {
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-hide_banner", "-y", "-i"])
-        .arg(file)
-        .arg("-i")
         .arg(&metadata_file)
+        .arg("-i")
+        .arg(file)
         .args([
             "-map_metadata",
+            "0",
+            "-map",
             "1",
             "-c:v",
             "copy",
