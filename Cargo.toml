@@ -10,8 +10,9 @@ codegen-units = 1
 
 [dependencies]
 ureq = "2.9.1"
-anyhow = "1.0.79"
-tempfile = "3.9.0"
-serde = { version = "1.0.195", features = ["serde_derive"] }
-serde_json = "1.0.111"
-ffmetadata = "0.1.1"
+anyhow = "1.0.98"
+tempfile = "3.20.0"
+serde = { version = "1.0.219", features = ["serde_derive"] }
+serde_json = "1.0.140"
+ffmetadata = "0.1.2"
+getopt = "1.1.9"
