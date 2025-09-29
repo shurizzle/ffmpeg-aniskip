@@ -207,7 +207,12 @@ impl TryFrom<CliArgs> for Ctx {
 
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-hide_banner", "-y", "-i"])
-            .arg(file.as_ref())
+            .arg({
+                let file = std::fs::canonicalize(file.as_ref())?;
+                let mut uri_path = OsString::from("file://");
+                uri_path.push(file);
+                uri_path
+            })
             .args(["-f", "ffmetadata"])
             .arg(&p);
         if !cmd.status()?.success() {
@@ -416,9 +421,19 @@ fn ffmpeg<P: AsRef<Path>>(file: P, metadata_file: TempPath) -> io::Result<()> {
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-hide_banner", "-y", "-i"])
-        .arg(&metadata_file)
+        .arg({
+            let file = std::fs::canonicalize(&metadata_file)?;
+            let mut uri_path = OsString::from("file://");
+            uri_path.push(file);
+            uri_path
+        })
         .arg("-i")
-        .arg(file)
+        .arg({
+            let file = std::fs::canonicalize(file)?;
+            let mut uri_path = OsString::from("file://");
+            uri_path.push(file);
+            uri_path
+        })
         .args([
             "-movflags",
             "+use_metadata_tags",
